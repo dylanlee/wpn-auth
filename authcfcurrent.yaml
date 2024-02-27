@@ -1,0 +1,202 @@
+AWSTemplateFormatVersion: 2010-09-09
+Resources:
+  TokenGeneratorFunction:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      Code:
+        S3Bucket: wpnauthconfig
+        S3Key: authlambda.zip
+      Handler: index.handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Runtime: nodejs20.x
+  TokenValidatorFunction:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      Code:
+        S3Bucket: wpnauthconfig
+        S3Key: accesslambda.zip
+      Handler: index.handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Runtime: nodejs20.x
+  LambdaExecutionRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+                - edgelambda.amazonaws.com
+            Action: 'sts:AssumeRole'
+      Policies:
+        - PolicyName: LambdaExecutionPolicy
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'logs:*'
+                  - 'dynamodb:*'
+                  - 's3:GetObject'
+                  - 'ses:SendEmail'
+                  - 'ses:SendRawEmail'
+                Resource: '*'
+  TokenGeneratorFunctionInvokePermission:
+    Type: 'AWS::Lambda::Permission'
+    Properties:
+      Action: 'lambda:InvokeFunction'
+      FunctionName: !GetAtt TokenGeneratorFunction.Arn
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub >-
+        arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${APIGateway}/*/POST/
+  APIDeployment:
+    Type: 'AWS::ApiGateway::Deployment'
+    DependsOn:
+      - EmailPostMethod
+      - RootOptionsMethod
+    Properties:
+      RestApiId: !Ref APIGateway
+      StageName: prod
+  APIGateway:
+    Type: 'AWS::ApiGateway::RestApi'
+    Properties:
+      Name: TokenBasedAuthAPI
+  EmailPostMethod:
+    Type: 'AWS::ApiGateway::Method'
+    Properties:
+      RestApiId: !Ref APIGateway
+      ResourceId: !GetAtt APIGateway.RootResourceId
+      HttpMethod: POST
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub >-
+          arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${TokenGeneratorFunction.Arn}/invocations
+  RootOptionsMethod:
+    Type: 'AWS::ApiGateway::Method'
+    Properties:
+      RestApiId: !Ref APIGateway
+      ResourceId: !GetAtt APIGateway.RootResourceId
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      Integration:
+        Type: MOCK
+        RequestTemplates:
+          application/json: |
+            {
+              "statusCode": 200
+            }
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: >-
+                'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'
+              method.response.header.Access-Control-Allow-Methods: '''POST,GET,OPTIONS'''
+              method.response.header.Access-Control-Allow-Origin: '''*'''
+            ResponseTemplates:
+              application/json: ''
+      MethodResponses:
+        - StatusCode: 200
+          ResponseModels:
+            application/json: Empty
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Origin: true
+  MyCloudFrontOAI:
+    Type: 'AWS::CloudFront::CloudFrontOriginAccessIdentity'
+    Properties:
+      CloudFrontOriginAccessIdentityConfig:
+        Comment: OAI for accessing S3 content exclusively via CloudFront
+  TokenValidatorFunctionVersion:
+    Type: 'AWS::Lambda::Version'
+    Properties:
+      FunctionName: !Ref TokenValidatorFunction
+  CloudFrontDistribution:
+    Type: 'AWS::CloudFront::Distribution'
+    Properties:
+      DistributionConfig:
+        Origins:
+          - DomainName: !GetAtt PrivateS3Bucket.DomainName
+            Id: S3Origin
+            S3OriginConfig:
+              OriginAccessIdentity: !Sub 'origin-access-identity/cloudfront/${MyCloudFrontOAI}'
+        DefaultCacheBehavior:
+          TargetOriginId: S3Origin
+          ViewerProtocolPolicy: redirect-to-https
+          LambdaFunctionAssociations:
+            - EventType: viewer-request
+              LambdaFunctionARN: !Ref TokenValidatorFunctionVersion
+          ForwardedValues:
+            QueryString: false
+            Headers:
+              - Authorization
+        Enabled: true
+        Comment: >-
+          CloudFront distribution for S3 bucket with Lambda@Edge for
+          authentication
+  PrivateS3Bucket:
+    Type: 'AWS::S3::Bucket'
+    Properties:
+      BucketName: wpn-exp-cat
+      AccessControl: Private
+      CorsConfiguration:
+        CorsRules:
+          - AllowedOrigins:
+              - '*'
+            AllowedMethods:
+              - GET
+            AllowedHeaders:
+              - Authorization
+            MaxAge: 3000
+  MyS3BucketPolicy:
+    Type: 'AWS::S3::BucketPolicy'
+    Properties:
+      Bucket: !Ref PrivateS3Bucket
+      PolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: !Sub >-
+                arn:aws:iam::cloudfront:user/CloudFront Origin Access Identity
+                ${MyCloudFrontOAI}
+            Action: 's3:GetObject'
+            Resource: !Sub 'arn:aws:s3:::${PrivateS3Bucket}/*'
+  TokenTable:
+    Type: 'AWS::DynamoDB::Table'
+    Properties:
+      TableName: TokenStorage
+      AttributeDefinitions:
+        - AttributeName: email
+          AttributeType: S
+        - AttributeName: token
+          AttributeType: S
+        - AttributeName: generationDate
+          AttributeType: S
+      KeySchema:
+        - AttributeName: token
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: EmailIndex
+          KeySchema:
+            - AttributeName: email
+              KeyType: HASH
+            - AttributeName: generationDate
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+        - IndexName: GenerationDateIndex
+          KeySchema:
+            - AttributeName: generationDate
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+      BillingMode: PAY_PER_REQUEST
+Outputs:
+  ApiUrl:
+    Description: API Gateway endpoint URL for Prod stage
+    Value: !Sub 'https://${APIGateway}.execute-api.${AWS::Region}.amazonaws.com/prod'
+
