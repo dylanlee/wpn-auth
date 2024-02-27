@@ -132,8 +132,21 @@ Resources:
               LambdaFunctionARN: !Ref TokenValidatorFunctionVersion
           ForwardedValues:
             QueryString: false
+            Cookies:
+              Forward: none
             Headers:
-              - Authorization
+              - 'Origin'
+              - 'Authorization'
+              - 'Access-Control-Request-Method'
+              - 'Access-Control-Request-Headers'
+          AllowedMethods:
+            - GET
+            - HEAD
+            - OPTIONS
+          CachedMethods:
+            - GET
+            - HEAD
+            - OPTIONS
         Enabled: true
         Comment: >-
           CloudFront distribution for S3 bucket with Lambda@Edge for
@@ -149,8 +162,9 @@ Resources:
               - '*'
             AllowedMethods:
               - GET
+              - HEAD
             AllowedHeaders:
-              - Authorization
+              - '*'
             MaxAge: 3000
   MyS3BucketPolicy:
     Type: 'AWS::S3::BucketPolicy'
