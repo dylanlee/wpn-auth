@@ -70,7 +70,7 @@ async function sendEmail(recipientEmail, token) {
     // Send email
     try {
 	await ses.send(new SendEmailCommand({
-	    Source: 'dylan@enmote.com', // Replace with your "from" address
+	    Source: 'dylan@waternode.ciroh.org', // Replace with your "from" address
 	    Destination: { ToAddresses: [recipientEmail] },
 	    Message: {
 		Subject: { Data: 'Your Access Token' },
