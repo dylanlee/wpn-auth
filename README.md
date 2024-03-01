@@ -1,4 +1,4 @@
-This authentication solution has been created using AWS and will issue temporary tokens to whitelisted domains (for example: "noaa.gov" or "ua.edu") or specific whitelisted emails. The solution stores temporary tokens in a dynamoDB table and tokens are used to grant access to a data stored in a private S3 bucket that is accessible by a cloudfront distribution that is triggering the token validation.
+This authentication solution has been created using AWS and will issue temporary tokens to whitelisted domains (for example: "noaa.gov" or "ua.edu") or specific whitelisted emails. The solution stores temporary tokens in a dynamoDB table and tokens are used to grant access to data stored in a private S3 bucket that is accessible by a cloudfront distribution that triggers token validation when a request is sent by a user.
 
 Repository contents:
 
