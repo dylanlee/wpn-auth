@@ -1,17 +1,21 @@
-variable "aws_region" {
-  description = "The AWS region to deploy resources into"
-  type        = string
-  default     = "us-east-1"
-}
+terraform {
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 5.0"
+    }
+  }
 
-variable "aws_account_id" {
-  description = "The AWS account ID"
-  type        = string
-  default     = ""
+# uncomment backend for CIROH deployment
+#  backend "s3" {
+#    bucket = "ciroh-tf-backend"
+#    key    = "ciroh-fim/wpn-auth"
+#    region = "us-east-1"
+#  }
 }
 
 provider "aws" {
-  region = "us-east-1" # replace with your preferred AWS region
+  region = var.aws_region
 }
 
 # Lambda Functions
@@ -22,6 +26,10 @@ resource "aws_lambda_function" "token_generator_function" {
   handler       = "index.handler"
   role          = aws_iam_role.lambda_execution_role.arn
   runtime       = "nodejs20.x"
+  tags = {
+      Name = "${var.name_tag} Lambda"
+      Project = var.project_tag
+    }
 }
 
 resource "aws_lambda_function" "token_validator_function" {
@@ -31,7 +39,11 @@ resource "aws_lambda_function" "token_validator_function" {
   handler       = "index.handler"
   role          = aws_iam_role.lambda_execution_role.arn
   runtime       = "nodejs20.x"
-  publish       = true 
+  publish       = true
+  tags = {
+      Name = "${var.name_tag} Lambda"
+      Project = var.project_tag
+    }
 }
 
 # need to be able to reference the published version ARN of token_validator so can run on lambda@edge
@@ -42,7 +54,7 @@ data "aws_lambda_function" "token_validator_function_published" {
 
 # IAM Role and Policy for Lambda
 resource "aws_iam_role" "lambda_execution_role" {
-  name = "lambda_execution_role"
+  name = "wpn_lambda_execution_role"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17",
@@ -59,7 +71,7 @@ resource "aws_iam_role" "lambda_execution_role" {
 }
 
 resource "aws_iam_policy" "lambda_execution_policy" {
-  name   = "LambdaExecutionPolicy"
+  name   = "Wpn_LambdaExecutionPolicy"
   policy = jsonencode({
     Version = "2012-10-17",
     Statement = [
@@ -91,10 +103,13 @@ resource "aws_lambda_permission" "token_generator_function_invoke_permission" {
   principal     = "apigateway.amazonaws.com"
   source_arn    = "arn:aws:execute-api:${var.aws_region}:${var.aws_account_id}:${aws_api_gateway_rest_api.api_gateway.id}/*/POST/"
 }
-
 # API Gateway
 resource "aws_api_gateway_rest_api" "api_gateway" {
   name = "TokenBasedAuthAPI"
+  tags = {
+      Name = "${var.name_tag} API"
+      Project = var.project_tag
+    }
 }
 
 # POST method at root
@@ -115,8 +130,8 @@ resource "aws_api_gateway_integration" "root_post_integration" {
   uri                     = aws_lambda_function.token_generator_function.invoke_arn
 }
 
-# Method response for POST
-resource "aws_api_gateway_method_response" "post_method_response" {
+# Method response for POST 200 status response
+resource "aws_api_gateway_method_response" "post_method_response_200" {
   depends_on = [aws_api_gateway_method.root_post_method]
   rest_api_id = aws_api_gateway_rest_api.api_gateway.id
   resource_id = aws_api_gateway_rest_api.api_gateway.root_resource_id
@@ -131,6 +146,63 @@ resource "aws_api_gateway_method_response" "post_method_response" {
 
   response_models = {
     "application/json" = "Empty"
+  }
+}
+
+# Integration response for POST 200 status response
+resource "aws_api_gateway_integration_response" "post_integration_response_200" {
+  depends_on  = [aws_api_gateway_integration.root_post_integration]
+  rest_api_id = aws_api_gateway_rest_api.api_gateway.id
+  resource_id = aws_api_gateway_rest_api.api_gateway.root_resource_id
+  http_method = aws_api_gateway_method.root_post_method.http_method
+  status_code = "200" # The status code returned from your Lambda function
+
+  response_parameters = {
+    "method.response.header.Access-Control-Allow-Origin" = "'*'"
+    "method.response.header.Access-Control-Allow-Methods" = "'OPTIONS,POST'"
+    "method.response.header.Access-Control-Allow-Headers" = "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+  }
+
+  response_templates = {
+    "application/json" = "$input.path('$')"
+  }
+}
+
+# Method response for POST 400 status response
+resource "aws_api_gateway_method_response" "post_method_response_400" {
+  depends_on = [aws_api_gateway_method.root_post_method]
+  rest_api_id = aws_api_gateway_rest_api.api_gateway.id
+  resource_id = aws_api_gateway_rest_api.api_gateway.root_resource_id
+  http_method = "POST"
+  status_code = "400"
+
+  response_parameters = {
+    "method.response.header.Access-Control-Allow-Origin"  = true
+    "method.response.header.Access-Control-Allow-Headers" = true
+    "method.response.header.Access-Control-Allow-Methods" = true
+  }
+
+  response_models = {
+    "application/json" = "Empty"
+  }
+}
+
+# Integration response for POST 400 status response
+resource "aws_api_gateway_integration_response" "post_integration_response_400" {
+  depends_on  = [aws_api_gateway_integration.root_post_integration]
+  rest_api_id = aws_api_gateway_rest_api.api_gateway.id
+  resource_id = aws_api_gateway_rest_api.api_gateway.root_resource_id
+  http_method = aws_api_gateway_method.root_post_method.http_method
+  status_code = "400" # The status code returned from your Lambda function
+
+  response_parameters = {
+    "method.response.header.Access-Control-Allow-Origin" = "'*'"
+    "method.response.header.Access-Control-Allow-Methods" = "'OPTIONS,POST'"
+    "method.response.header.Access-Control-Allow-Headers" = "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+  }
+
+  response_templates = {
+    "application/json" = "$input.path('$')"
   }
 }
 
@@ -198,6 +270,12 @@ resource "aws_api_gateway_deployment" "api_deployment" {
   }
 }
 
+resource "aws_api_gateway_stage" "api_prod_stage" {
+  deployment_id = aws_api_gateway_deployment.api_deployment.id
+  rest_api_id   = aws_api_gateway_rest_api.api_gateway.id
+  stage_name    = "prod"
+}
+
 # Method response for OPTIONS
 resource "aws_api_gateway_method_response" "root_options_method_response" {
   rest_api_id = aws_api_gateway_rest_api.api_gateway.id
@@ -215,6 +293,105 @@ resource "aws_api_gateway_method_response" "root_options_method_response" {
     "method.response.header.Access-Control-Allow-Origin"  = true
   }
 }
+
+resource "aws_wafv2_web_acl" "auth-api-gateway-acl" {
+  name        = "auth-api-gateway-acl"
+  scope       = "REGIONAL" 
+  description = "ACL for API Gateway and CloudFront"
+  default_action {
+    allow {}
+  }
+
+  visibility_config {
+    cloudwatch_metrics_enabled = true
+    metric_name                = "auth-api-gateway-acl"
+    sampled_requests_enabled   = true
+  }
+
+  # Geo match rule for allowed countries
+  rule {
+    name     = "GeoMatchRule"
+    priority = 1
+
+    action {
+      allow {}
+    }
+
+    statement {
+      geo_match_statement {
+        country_codes = [
+        "US", # United States
+        "CA", # Canada
+        "GB", # United Kingdom
+	"AT", # Austria
+	"BE", # Belgium
+	"BG", # Bulgaria
+	"HR", # Croatia
+	"CY", # Cyprus
+	"CZ", # Czech Republic
+	"DK", # Denmark
+	"EE", # Estonia
+	"FI", # Finland
+	"FR", # France
+	"DE", # Germany
+	"GR", # Greece
+	"HU", # Hungary
+	"IE", # Ireland
+	"IT", # Italy
+	"LV", # Latvia
+	"LT", # Lithuania
+	"LU", # Luxembourg
+	"MT", # Malta
+	"NL", # Netherlands
+	"PL", # Poland
+	"PT", # Portugal
+	"RO", # Romania
+	"SK", # Slovakia
+	"SI", # Slovenia
+	"ES", # Spain
+	"SE", # Sweden
+        ]
+      }
+    }
+
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "GeoMatchRule"
+      sampled_requests_enabled   = true
+    }
+  }
+
+  rule {
+    name     = "RateLimit5Minute"
+    priority = 2 # Ensure this does not conflict with other rule priorities
+    action {
+      block {}
+    }
+
+    statement {
+      rate_based_statement {
+        limit              = 10 
+        aggregate_key_type = "IP"
+      }
+    }
+
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "RateLimit5Minute"
+      sampled_requests_enabled   = true
+    }
+  }
+  tags = {
+      Name = "${var.name_tag} WAF"
+      Project = var.project_tag
+    }
+}
+
+resource "aws_wafv2_web_acl_association" "api_gateway_association" {
+  resource_arn = aws_api_gateway_stage.api_prod_stage.arn 
+  web_acl_arn  = aws_wafv2_web_acl.auth-api-gateway-acl.arn
+}
+
 resource "aws_cloudfront_distribution" "cloudfront_distribution" {
   enabled             = true
   is_ipv6_enabled     = true
@@ -261,14 +438,112 @@ resource "aws_cloudfront_distribution" "cloudfront_distribution" {
 
   restrictions {
     geo_restriction {
-      restriction_type = "none"
+      restriction_type = "whitelist"
+      locations = [
+        "US", # United States
+        "CA", # Canada
+        "GB", # United Kingdom
+	"AT", # Austria
+	"BE", # Belgium
+	"BG", # Bulgaria
+	"HR", # Croatia
+	"CY", # Cyprus
+	"CZ", # Czech Republic
+	"DK", # Denmark
+	"EE", # Estonia
+	"FI", # Finland
+	"FR", # France
+	"DE", # Germany
+	"GR", # Greece
+	"HU", # Hungary
+	"IE", # Ireland
+	"IT", # Italy
+	"LV", # Latvia
+	"LT", # Lithuania
+	"LU", # Luxembourg
+	"MT", # Malta
+	"NL", # Netherlands
+	"PL", # Poland
+	"PT", # Portugal
+	"RO", # Romania
+	"SK", # Slovakia
+	"SI", # Slovenia
+	"ES", # Spain
+	"SE", # Sweden
+      ]
     }
   }
+
+  tags = {
+      Name = "${var.name_tag} CloudFront"
+      Project = var.project_tag
+    }
+}
+
+resource "aws_wafv2_web_acl" "cloudfront_acl" {
+  name        = "cloudfront-acl"
+  scope       = "CLOUDFRONT"
+  description = "WAF ACL for CloudFront distribution"
+
+  # Rate-Based Rule for Limiting Requests
+  rule {
+    name     = "RateLimit"
+    priority = 200
+    action {
+      block {}
+    }
+
+    statement {
+      rate_based_statement {
+        limit              = 5000 
+        aggregate_key_type = "IP"
+      }
+    }
+
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "RateLimit"
+      sampled_requests_enabled   = true
+    }
+  }
+
+  tags = {
+      Name = "${var.name_tag} WAF"
+      Project = var.project_tag
+    }
+}
+
+resource "aws_wafv2_web_acl_association" "cloudfront_acl_association" {
+  resource_arn = aws_cloudfront_distribution.cloudfront_distribution.arn
+  web_acl_arn  = aws_wafv2_web_acl.cloudfront_acl.arn
 }
 
 resource "aws_s3_bucket" "private_s3_bucket" {
-  bucket = "wpn-exp-cat"
+  bucket = var.exp_bucket_name
+  versioning {
+    enabled = true
+  }
+  tags = {
+      Name = "${var.name_tag} S3"
+      Project = var.project_tag
+    }
+}
+
+resource "aws_s3_bucket_ownership_controls" "s3_bucket_acl_ownership" {
+  bucket = aws_s3_bucket.private_s3_bucket.id
+  rule {
+    object_ownership = "BucketOwnerPreferred"
+  }
+}
+
+resource "aws_s3_bucket_acl" "private_acl" {
+  depends_on = [aws_s3_bucket_ownership_controls.s3_bucket_acl_ownership]
+  bucket = aws_s3_bucket.private_s3_bucket.id
   acl    = "private"
+}
+
+resource "aws_s3_bucket_cors_configuration" "private_s3_bucket_cors" {
+  bucket = aws_s3_bucket.private_s3_bucket.id
 
   cors_rule {
     allowed_origins = ["*"]
@@ -291,9 +566,38 @@ resource "aws_s3_bucket_policy" "my_s3_bucket_policy" {
         }
         Action   = "s3:GetObject"
         Resource = "${aws_s3_bucket.private_s3_bucket.arn}/*"
+      },
+      {
+        Effect = "Allow"
+        Principal = { AWS = "arn:aws:iam::474288090892:user/shawn.carter@noaa.gov" }
+        Action = [
+          "s3:GetObject",
+          "s3:PutObject",
+          "s3:DeleteObject"
+        ]
+        Resource = "${aws_s3_bucket.private_s3_bucket.arn}/*"
       }
     ]
   })
+}
+
+# add some backups/accidental deletion protection 
+resource "aws_s3_bucket_lifecycle_configuration" "example" {
+  bucket = aws_s3_bucket.private_s3_bucket.id
+
+  rule {
+    id     = "transition-old-versions"
+    status = "Enabled"
+
+    noncurrent_version_transition {
+      days          = 5 
+      storage_class = "GLACIER"
+    }
+
+    noncurrent_version_expiration {
+      days = 30
+    }
+  }
 }
 
 # CloudFront Origin Access Identity needed for the S3 bucket policy
@@ -326,17 +630,18 @@ resource "aws_dynamodb_table" "token_table" {
     hash_key           = "email"
     range_key          = "generationDate"
     projection_type    = "ALL"
-    read_capacity      = 10 # Not necessary for PAY_PER_REQUEST billing mode, but included for completeness
-    write_capacity     = 10 # Not necessary for PAY_PER_REQUEST billing mode, but included for completeness
   }
 
   global_secondary_index {
     name            = "GenerationDateIndex"
     hash_key        = "generationDate"
     projection_type = "ALL"
-    read_capacity   = 10 # Not necessary for PAY_PER_REQUEST billing mode, but included for completeness
-    write_capacity  = 10 # Not necessary for PAY_PER_REQUEST billing mode, but included for completeness
   }
+
+  tags = {
+      Name = "${var.name_tag} DynamoDB"
+      Project = var.project_tag
+    }
 }
 
 # Outputs
