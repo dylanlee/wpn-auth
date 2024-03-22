@@ -103,6 +103,7 @@ resource "aws_lambda_permission" "token_generator_function_invoke_permission" {
   principal     = "apigateway.amazonaws.com"
   source_arn    = "arn:aws:execute-api:${var.aws_region}:${var.aws_account_id}:${aws_api_gateway_rest_api.api_gateway.id}/*/POST/"
 }
+
 # API Gateway
 resource "aws_api_gateway_rest_api" "api_gateway" {
   name = "TokenBasedAuthAPI"
@@ -194,7 +195,7 @@ resource "aws_api_gateway_integration_response" "post_integration_response_400" 
   resource_id = aws_api_gateway_rest_api.api_gateway.root_resource_id
   http_method = aws_api_gateway_method.root_post_method.http_method
   status_code = "400" # The status code returned from your Lambda function
-
+  selection_pattern = "[a-z]"
   response_parameters = {
     "method.response.header.Access-Control-Allow-Origin" = "'*'"
     "method.response.header.Access-Control-Allow-Methods" = "'OPTIONS,POST'"
@@ -252,7 +253,6 @@ resource "aws_api_gateway_deployment" "api_deployment" {
   ]
 
   rest_api_id = aws_api_gateway_rest_api.api_gateway.id
-  stage_name  = "prod"
 
   # Redeploy API when changes are applied
   triggers = {
@@ -370,7 +370,7 @@ resource "aws_wafv2_web_acl" "auth-api-gateway-acl" {
 
     statement {
       rate_based_statement {
-        limit              = 10 
+        limit              = 100 
         aggregate_key_type = "IP"
       }
     }
@@ -397,7 +397,7 @@ resource "aws_cloudfront_distribution" "cloudfront_distribution" {
   is_ipv6_enabled     = true
   comment             = "CloudFront distribution for S3 bucket with Lambda@Edge for authentication"
   default_root_object = "index.html"
-
+  web_acl_id  = aws_wafv2_web_acl.cloudfront_acl.arn
   origin {
     domain_name = aws_s3_bucket.private_s3_bucket.bucket_regional_domain_name
     origin_id   = "S3Origin"
@@ -485,10 +485,20 @@ resource "aws_wafv2_web_acl" "cloudfront_acl" {
   scope       = "CLOUDFRONT"
   description = "WAF ACL for CloudFront distribution"
 
+  default_action {
+    allow {}
+  }
+
+  visibility_config {
+    cloudwatch_metrics_enabled = true
+    metric_name                = "auth-cloudfront-acl"
+    sampled_requests_enabled   = true
+  }
+
   # Rate-Based Rule for Limiting Requests
   rule {
     name     = "RateLimit"
-    priority = 200
+    priority = 2
     action {
       block {}
     }
@@ -511,11 +521,6 @@ resource "aws_wafv2_web_acl" "cloudfront_acl" {
       Name = "${var.name_tag} WAF"
       Project = var.project_tag
     }
-}
-
-resource "aws_wafv2_web_acl_association" "cloudfront_acl_association" {
-  resource_arn = aws_cloudfront_distribution.cloudfront_distribution.arn
-  web_acl_arn  = aws_wafv2_web_acl.cloudfront_acl.arn
 }
 
 resource "aws_s3_bucket" "private_s3_bucket" {
@@ -569,7 +574,7 @@ resource "aws_s3_bucket_policy" "my_s3_bucket_policy" {
       },
       {
         Effect = "Allow"
-        Principal = { AWS = "arn:aws:iam::474288090892:user/shawn.carter@noaa.gov" }
+        Principal = { AWS = "arn:aws:iam::${var.bucket_users_account_id}:root" }
         Action = [
           "s3:GetObject",
           "s3:PutObject",
@@ -582,7 +587,7 @@ resource "aws_s3_bucket_policy" "my_s3_bucket_policy" {
 }
 
 # add some backups/accidental deletion protection 
-resource "aws_s3_bucket_lifecycle_configuration" "example" {
+resource "aws_s3_bucket_lifecycle_configuration" "exp_bucket_del_protect" {
   bucket = aws_s3_bucket.private_s3_bucket.id
 
   rule {
@@ -590,12 +595,12 @@ resource "aws_s3_bucket_lifecycle_configuration" "example" {
     status = "Enabled"
 
     noncurrent_version_transition {
-      days          = 5 
+      noncurrent_days = 5 
       storage_class = "GLACIER"
     }
 
     noncurrent_version_expiration {
-      days = 30
+      noncurrent_days = 30
     }
   }
 }
@@ -623,6 +628,11 @@ resource "aws_dynamodb_table" "token_table" {
   attribute {
     name = "generationDate"
     type = "S"
+  }
+  
+  ttl {
+    attribute_name = "TimeToExist"
+    enabled        = true
   }
 
   global_secondary_index {

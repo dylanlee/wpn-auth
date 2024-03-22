@@ -16,7 +16,7 @@ variable "aws_region" {
 variable "aws_account_id" {
   description = "The AWS account ID"
   type        = string
-  default     = ""
+  default     = "395733588615"
 }
 
 variable "exp_bucket_name" {
@@ -24,3 +24,10 @@ variable "exp_bucket_name" {
   type        = string
   default     = "wpn-exp-cat-test"
 }
+
+variable "bucket_users_account_id" {
+  description = "account id of the NWC AWS account that will be writing data to the bucket"
+  type        = string
+  default     = "474288090892"
+}
+
